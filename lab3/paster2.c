@@ -546,6 +546,8 @@ int main( int argc, char** argv ) {
                         return ret;
                     }
 
+                    /* PUT INFLATED DATA IN IDAT_DATA */
+
                     sem_wait(&sems[7]);
                     *total_len_inf += len_inf;
                     sem_post(&sems[7]);
