@@ -88,8 +88,8 @@ size_t header_cb_curl(char *p_recv, size_t size, size_t nmemb, void *userdata);
 size_t write_cb_curl(char *p_recv, size_t size, size_t nmemb, void *p_userdata);
 int recv_buf_init(RECV_BUF *ptr, size_t max_size);
 int recv_buf_cleanup(RECV_BUF *ptr);
-int isCollected();
 int fragmentsCollected(int *fragment);
+int allInflated(int *count);
 
 int fragmentsCollected(int *fragment) {
     int tf = 0;
@@ -101,7 +101,7 @@ int fragmentsCollected(int *fragment) {
     return tf;
 }
 
-int isCollected(int * count) {
+int allInflated(int * count) {
     int tf = 0;
     sem_wait(&sems[6]);
     if (*count > 49) {
@@ -116,7 +116,7 @@ int recv_buf_cleanup(RECV_BUF *ptr)
     if (ptr == NULL) {
 	    return 1;
     }
-    
+
     free(ptr->buf);
     ptr->size = 0;
     ptr->max_size = 0;
@@ -161,21 +161,37 @@ int sizeof_shm_recv_buf(size_t nbytes)
     return (sizeof(RECV_BUF) + sizeof(char) * nbytes);
 }
 
-int recv_buf_init(RECV_BUF *ptr, size_t nbytes)
+int recv_buf_init(RECV_BUF *ptr, size_t max_size)
 {
-    if ( ptr == NULL ) {
+    void *p = NULL;
+    
+    if (ptr == NULL) {
         return 1;
     }
+
+    p = malloc(max_size);
+    if (p == NULL) {
+	    return 2;
+    }
     
-    ptr->buf = (char *)ptr + sizeof(RECV_BUF);
+    ptr->buf = p;
     ptr->size = 0;
-    ptr->max_size = nbytes;
+    ptr->max_size = max_size;
     ptr->seq = -1;              /* valid seq should be non-negative */
-    
     return 0;
 }
 
 int main( int argc, char** argv ) {
+
+    double times[2];
+    struct timeval tv;
+
+    if (gettimeofday(&tv, NULL) != 0) {
+        perror("gettimeofday");
+        abort();
+    }
+
+    times[0] = (tv.tv_sec) + tv.tv_usec/1000000.;
 
     /* check if all arguments are provided */
     if (argc != 6) {
@@ -238,14 +254,15 @@ int main( int argc, char** argv ) {
     int shmid_file_length1;
     int shmid_idat_length1;
 
-    int shm_size = B * sizeof_shm_recv_buf(BUF_SIZE);
+    int shm_size = sizeof_shm_recv_buf(BUF_SIZE);
 
     pid_t pid = 0;
-    pid_t cpids[PROD_NUM + CONS_NUM];
+    pid_t ppids[PROD_NUM];
+    pid_t cpids[CONS_NUM];
     
     /* create shared memory segment */
     printf("shm_size = %d.\n", shm_size);
-    shmid = shmget(IPC_PRIVATE, shm_size, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
+    shmid = shmget(IPC_PRIVATE, B * shm_size, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
     shmid_png_buf = shmget(IPC_PRIVATE, B * BUF_SIZE, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
     shmid_sems = shmget(IPC_PRIVATE, sizeof(sem_t) * NUM_SEMS, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
     shmid_fragment = shmget(IPC_PRIVATE, sizeof(int), IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
@@ -277,15 +294,6 @@ int main( int argc, char** argv ) {
         perror("shmat");
         abort();
     }
-
-    // /* initialize p_shm_recv_buf */
-    // for (int i = 0; i < B; i++) {
-    //     RECV_BUF tmp;
-    //     tmp.size = 0;
-    //     tmp.max_size = 0;
-    //     tmp.seq = -1;
-    //     p_shm_recv_buf[i] = tmp;
-    // }
 
     /* initialize png_buf */
     memset(png_buf, 0, B * BUF_SIZE);
@@ -333,20 +341,6 @@ int main( int argc, char** argv ) {
     *file_length1 = 0;
     *idat_length1 = 0;
 
-    // /* initialize png_buf */
-    // sem_wait(&sems[5]);
-    // for (int i = 0; i < 50; i++) {
-    //     RECV_BUF tmp;
-    //     unsigned char buf[BUF_SIZE];
-    //     memset(buf, 0, BUF_SIZE);
-    //     tmp.buf = buf;
-    //     tmp.size = 0;
-    //     tmp.max_size = 0;
-    //     tmp.seq = -1;
-    //     png_buf[i] = tmp;
-    // }
-    // sem_post(&sems[5]);
-
     /* initialize count to 0 */
     sem_wait(&sems[6]);
     *count = 0;
@@ -370,22 +364,23 @@ int main( int argc, char** argv ) {
     U8 *idat_data;
     U32 crc_val = 0;
 
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
     for (int i = 0; i < (PROD_NUM + CONS_NUM); i++) {
 
         pid = fork();
 
-        if ( pid == 0 ) {          /* child proc */
+        if (i < PROD_NUM) {
 
-            if (i < PROD_NUM) {
+            if ( pid == 0 ) {          /* child proc */
+
                 /* run as a producer */
 
-                while (fragmentsCollected(fragment) == 0) {
+                while (!fragmentsCollected(fragment)) {
 
                     CURL *curl_handle;
                     CURLcode res;
                     char url[256];
-
-                    curl_global_init(CURL_GLOBAL_DEFAULT);
 
                     printf("producer # %d running...\n", i);
 
@@ -450,10 +445,10 @@ int main( int argc, char** argv ) {
                     sem_wait(&sems[4]);
                     printf("rear available\n");
 
-                    for (int j = 0; j < recv_buf.size; j++) {
-                        printf("%02x", recv_buf.buf[j]);
-                    }
-                    printf("\n");
+                    // for (int j = 0; j < recv_buf.size; j++) {
+                    //     printf("%02x", recv_buf.buf[j]);
+                    // }
+                    // printf("\n");
 
                     p_shm_recv_buf[*rear].size = recv_buf.size;
                     p_shm_recv_buf[*rear].max_size = recv_buf.max_size;
@@ -462,11 +457,13 @@ int main( int argc, char** argv ) {
 
                     *rear = (*rear + 1) % B;
 
-                    printf("%p\n", png_buf + *rear);
-                    for (int j = 0; j < recv_buf.size; j++) {
-                        printf("%02x", *(png_buf + j +(*rear)));
-                    }
-                    printf("\n");
+                    // printf("%p\n", png_buf + *rear);
+                    // for (int j = 0; j < recv_buf.size; j++) {
+                    //     printf("%02x", *(png_buf + j +(*rear)));
+                    // }
+                    // printf("\n");
+
+                    recv_buf_cleanup(&recv_buf);
 
                     sem_post(&sems[4]);
                     sem_post(&sems[3]);
@@ -477,16 +474,24 @@ int main( int argc, char** argv ) {
 
                     /* cleaning up */
                     curl_easy_cleanup(curl_handle);
-                    curl_global_cleanup();
                 }
-            
+
+            } else if ( pid > 0 ) {    /* parent proc */
+                ppids[i] = pid;
             } else {
+                perror("fork");
+                abort();
+            }
+        
+        } else {
+
+            if ( pid == 0 ) {          /* child proc */
+
                 /* run as a consumer */
 
-                while(isCollected(count) == 0) {
+                while(!allInflated(count)) {
 
-                    printf("consumer running...\n");
-
+                    printf("consumer # %d running...\n", i - PROD_NUM);
                     usleep(DELAY * 1000);
 
                     /* start critical section */
@@ -496,10 +501,10 @@ int main( int argc, char** argv ) {
                     sem_wait(&sems[4]);
                     printf("front available\n");
 
-                    for (int j = 0; j < p_shm_recv_buf[*front].size; j++) {
-                        printf("%02x", *(png_buf + j +(*front)));
-                    }
-                    printf("\n");
+                    // for (int j = 0; j < p_shm_recv_buf[*front].size; j++) {
+                    //     printf("%02x", *(png_buf + j +(*front)));
+                    // }
+                    // printf("\n");
 
                     unsigned int file_length = p_shm_recv_buf[*front].size;
                     p_buffer = malloc(file_length * sizeof(unsigned char));
@@ -512,7 +517,7 @@ int main( int argc, char** argv ) {
                     printf("p_buffer: \n");
                     for (int j = 0; j < p_shm_recv_buf[*front].size; j++) {
                         p_buffer[j] = *(png_buf + j +(*front));
-                        printf("%02x", p_buffer[j]);
+                        // printf("%02x", p_buffer[j]);
                     }
                     printf("\n");
 
@@ -566,6 +571,7 @@ int main( int argc, char** argv ) {
                     sem_wait(&sems[6]);
                     printf("increment count\n");
                     (*count)++;
+                    printf("count: %d\n", *count);
                     sem_post(&sems[6]);
 
                     free(buf_inf);
@@ -578,28 +584,39 @@ int main( int argc, char** argv ) {
                     printf("space available\n");
                     /* end critical section */
                 }
-            }
 
-        } else if ( pid > 0 ) {    /* parent proc */
-            cpids[i] = pid;
-        } else {
-            perror("fork");
-            abort();
+            } else if ( pid > 0 ) {    /* parent proc */
+                cpids[i - PROD_NUM] = pid;
+            } else {
+                perror("fork");
+                abort();
+            }
         }
+
+        
     }
 
     int state;
 
     if ( pid > 0 ) {            /* parent process */
-        for (int i = 0; i < (PROD_NUM + CONS_NUM); i++ ) {
+        for (int i = 0; i < PROD_NUM; i++ ) {
+            waitpid(ppids[i], &state, 0);
+            if (WIFEXITED(state)) {
+                printf("Child ppid[%d]=%d terminated with state: %d.\n", i, ppids[i], state);
+            }
+        }
+        for (int i = 0; i < CONS_NUM; i++ ) {
             waitpid(cpids[i], &state, 0);
             if (WIFEXITED(state)) {
                 printf("Child cpid[%d]=%d terminated with state: %d.\n", i, cpids[i], state);
             }
         }
-
-        printf("file length 1: %d\n", file_length1);
-
+        if (gettimeofday(&tv, NULL) != 0) {
+            perror("gettimeofday");
+            abort();
+        }
+        times[1] = (tv.tv_sec) + tv.tv_usec/1000000.;
+        printf("Parent pid = %d: total execution time is %.6lf seconds\n", getpid(),  times[1] - times[0]);
     }
 
     shmdt(p_shm_recv_buf);
@@ -629,6 +646,11 @@ int main( int argc, char** argv ) {
     sem_destroy(&sems[6]);
     sem_destroy(&sems[7]);
 
+    curl_global_cleanup();
+
     return 0;
 
 }
+
+// check if sem[5] is necessary
+// check if timing info in right spot
