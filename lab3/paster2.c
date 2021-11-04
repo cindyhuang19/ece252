@@ -373,8 +373,6 @@ int main( int argc, char** argv ) {
 
     /* declare variables for catpng logic in consumer */
     U8 *p_buffer = NULL;
-
-    int idat_init = 0;
     
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
@@ -635,7 +633,6 @@ int main( int argc, char** argv ) {
 
     /* copy IHDR height to buffer */
     unsigned int total_height = 6*50;
-    unsigned int total_width = 400*50;
 
     total_height = htonl(total_height);
     memcpy((png_buffer + 20), &total_height, 4);
