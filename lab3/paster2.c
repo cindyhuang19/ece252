@@ -505,12 +505,10 @@ int main( int argc, char** argv ) {
                     sem_wait(&sems[6]);
                     int valid = 0;
                     for (int k=0; k<B; k++) {
-                        printf("seq: %d, count %d\n", p_shm_recv_buf[k].seq, *count);
                         if ((p_shm_recv_buf[k].seq) == *count) {
                             *front = k;
                             valid = 1;
                         }
-                        printf("front: %d\n", *front);
                     }
                     sem_post(&sems[6]);
                     
@@ -518,7 +516,6 @@ int main( int argc, char** argv ) {
                     if (!valid) {
                         usleep(10000);
                     } else {
-                        printf("consume\n");
                         sem_wait(&sems[1]);
 
                         unsigned int file_length = p_shm_recv_buf[*front].size;
