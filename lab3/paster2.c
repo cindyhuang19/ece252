@@ -90,7 +90,6 @@ typedef struct recv_buf_shr_mem {
     size_t size;
     size_t max_size;
     int seq;
-    int consumed;
 } RECV_BUF_MEM;
 
 size_t header_cb_curl(char *p_recv, size_t size, size_t nmemb, void *userdata);
@@ -368,7 +367,6 @@ int main( int argc, char** argv ) {
 
     for (int i=0; i<B; i++) {
         p_shm_recv_buf[i].seq = -1;
-	p_shm_recv_buf[i].consumed = 1;
     }
 
     /* declare variables for catpng logic in consumer */
@@ -455,35 +453,14 @@ int main( int argc, char** argv ) {
                     }
 
                     sem_wait(&sems[10]);
-		    
-		    int valid = 0;
-			
-		    int inf_check = 0;
-		    while (!valid) {
-			for (int k=0; k<B; k++) {
-			    if (p_shm_recv_buf[k].consumed) {
-				*rear = k;
-				valid = 1;
-			    }	
-			}
-			if (!valid) {
-			    if (inf_check > 100000) {
-			    	printf("producer can't find valid spot\n");
-				break;
-			    }
-			    inf_check ++;
-			    usleep(10000);	
-			}  
-		    }
                     
                     p_shm_recv_buf[*rear].size = recv_buf.size;
                     p_shm_recv_buf[*rear].max_size = recv_buf.max_size;
                     p_shm_recv_buf[*rear].seq = recv_buf.seq;
-		    p_shm_recv_buf[*rear].consumed = 0;
 
                     memcpy(png_buf + ((*rear)*BUF_SIZE), recv_buf.buf, recv_buf.size);
 
-                    //*rear = (*rear + 1) % B;
+                    *rear = (*rear + 1) % B;
                     sem_post(&sems[10]);
 
                     recv_buf_cleanup(&recv_buf);
@@ -513,7 +490,6 @@ int main( int argc, char** argv ) {
                     usleep(DELAY * 1000);
 
                     U64 len_inf = 0;
-		    sem_wait(&sems[1]);
 
                     sem_wait(&sems[10]);
 
@@ -531,6 +507,7 @@ int main( int argc, char** argv ) {
                     if (!valid) {
                         usleep(10000);
                     } else {
+                        sem_wait(&sems[1]);
 
                         unsigned int file_length = p_shm_recv_buf[*front].size;
 
@@ -542,7 +519,6 @@ int main( int argc, char** argv ) {
                         }
 
                         memcpy(p_buffer, png_buf + ((*front)*BUF_SIZE), file_length);
-			p_shm_recv_buf[*front].consumed = 1;
 
                         /* calculate data length */
 
@@ -590,9 +566,10 @@ int main( int argc, char** argv ) {
 
                         free(buf_inf);
                         free(p_buffer);
+
+                        sem_post(&sems[0]);
                     }
                     sem_post(&sems[10]);
-		    sem_post(&sems[0]);
                 }
 
                 exit(0);
