@@ -368,7 +368,7 @@ int main( int argc, char** argv ) {
 
     for (int i=0; i<B; i++) {
         p_shm_recv_buf[i].seq = -1;
-	p_shm_recv_buf[i].consumed = 0;
+	p_shm_recv_buf[i].consumed = 1;
     }
 
     /* declare variables for catpng logic in consumer */
