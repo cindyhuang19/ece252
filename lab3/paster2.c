@@ -490,6 +490,7 @@ int main( int argc, char** argv ) {
                     usleep(DELAY * 1000);
 
                     U64 len_inf = 0;
+		    sem_wait(&sems[1]);
 
                     sem_wait(&sems[10]);
 
@@ -507,7 +508,6 @@ int main( int argc, char** argv ) {
                     if (!valid) {
                         usleep(10000);
                     } else {
-                        sem_wait(&sems[1]);
 
                         unsigned int file_length = p_shm_recv_buf[*front].size;
 
@@ -566,10 +566,9 @@ int main( int argc, char** argv ) {
 
                         free(buf_inf);
                         free(p_buffer);
-
-                        sem_post(&sems[0]);
                     }
                     sem_post(&sems[10]);
+		    sem_post(&sems[0]);
                 }
 
                 exit(0);
