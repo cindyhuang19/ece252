@@ -90,7 +90,6 @@ typedef struct recv_buf_shr_mem {
     size_t size;
     size_t max_size;
     int seq;
-    int consumed;
 } RECV_BUF_MEM;
 
 size_t header_cb_curl(char *p_recv, size_t size, size_t nmemb, void *userdata);
@@ -368,11 +367,12 @@ int main( int argc, char** argv ) {
 
     for (int i=0; i<B; i++) {
         p_shm_recv_buf[i].seq = -1;
-        p_shm_recv_buf[i].consumed = 0;
     }
 
     /* declare variables for catpng logic in consumer */
     U8 *p_buffer = NULL;
+
+    int idat_init = 0;
     
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
@@ -453,17 +453,10 @@ int main( int argc, char** argv ) {
                     }
 
                     sem_wait(&sems[10]);
-
-                    for (int k=0; k<B; k++) {
-                        if (p_shm_recv_buf[k].consumed) {
-                            *rear = k;
-                        }	
-                    }
                     
                     p_shm_recv_buf[*rear].size = recv_buf.size;
                     p_shm_recv_buf[*rear].max_size = recv_buf.max_size;
                     p_shm_recv_buf[*rear].seq = recv_buf.seq;
-                    p_shm_recv_buf[*rear].consumed = 0;
 
                     memcpy(png_buf + ((*rear)*BUF_SIZE), recv_buf.buf, recv_buf.size);
 
@@ -526,7 +519,6 @@ int main( int argc, char** argv ) {
                         }
 
                         memcpy(p_buffer, png_buf + ((*front)*BUF_SIZE), file_length);
-                        p_shm_recv_buf[*front].consumed = 1;
 
                         /* calculate data length */
 
@@ -633,6 +625,7 @@ int main( int argc, char** argv ) {
 
     /* copy IHDR height to buffer */
     unsigned int total_height = 6*50;
+    unsigned int total_width = 400*50;
 
     total_height = htonl(total_height);
     memcpy((png_buffer + 20), &total_height, 4);
