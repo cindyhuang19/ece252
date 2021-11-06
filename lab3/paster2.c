@@ -28,10 +28,10 @@
 #define CHUNK_CRC_SIZE  4 /* chunk CRC field size in bytes */
 #define DATA_IHDR_SIZE 13 /* IHDR chunk data field size */
 
-#define NUM_SEMS 9
+#define NUM_SEMS 11
 #define SEM_PROC 1
 #define BUF_SIZE 10240  /* 1024*10 = 10K */
-#define MAX_SIZE 100000
+#define MAX_SIZE 1000000
 
 int B = 1;
 int PROD_NUM = 1;
@@ -84,6 +84,13 @@ typedef struct recv_buf_flat {
     int seq;         /* >=0 sequence number extracted from http header */
                      /* <0 indicates an invalid seq number */
 } RECV_BUF;
+
+typedef struct recv_buf_shr_mem {
+    unsigned char *buf;
+    size_t size;
+    size_t max_size;
+    int seq;
+} RECV_BUF_MEM;
 
 size_t header_cb_curl(char *p_recv, size_t size, size_t nmemb, void *userdata);
 size_t write_cb_curl(char *p_recv, size_t size, size_t nmemb, void *p_userdata);
@@ -145,8 +152,6 @@ size_t write_cb_curl(char *p_recv, size_t size, size_t nmemb, void *p_userdata)
     RECV_BUF *p = (RECV_BUF *)p_userdata;
  
     if (p->size + realsize + 1 > p->max_size) {/* hope this rarely happens */ 
-        printf("size: %d, realsize: %d, max_size: %d\n", p->size, realsize, p->max_size);
-        fprintf(stderr, "User buffer is too small, abort...\n");
         abort();
     }
 
@@ -159,7 +164,7 @@ size_t write_cb_curl(char *p_recv, size_t size, size_t nmemb, void *p_userdata)
 
 int sizeof_shm_recv_buf(size_t nbytes)
 {
-    return (sizeof(RECV_BUF) + sizeof(char) * nbytes);
+    return (sizeof(RECV_BUF_MEM) + sizeof(char) * nbytes);
 }
 
 int recv_buf_init(RECV_BUF *ptr, size_t max_size)
@@ -186,13 +191,6 @@ int main( int argc, char** argv ) {
 
     double times[2];
     struct timeval tv;
-
-    if (gettimeofday(&tv, NULL) != 0) {
-        perror("gettimeofday");
-        abort();
-    }
-
-    times[0] = (tv.tv_sec) + tv.tv_usec/1000000.;
 
     /* check if all arguments are provided */
     if (argc != 6) {
@@ -234,7 +232,7 @@ int main( int argc, char** argv ) {
  
     /* declare variables for CURL, shared memory, process ids */
 
-    RECV_BUF *p_shm_recv_buf;
+    RECV_BUF_MEM *p_shm_recv_buf;
     unsigned char *png_buf;
     int *fragment;
     int *front;
@@ -242,6 +240,9 @@ int main( int argc, char** argv ) {
     int *count;
     U64 *total_len_inf;
     U8 *idat_data;
+    unsigned char *first_buf;
+
+    unsigned int *idat_length1;
 
     int shmid;
     int shmid_png_buf;
@@ -252,6 +253,8 @@ int main( int argc, char** argv ) {
     int shmid_count;
     int shmid_total_len_inf;
     int shmid_idat_data;
+    int shmid_idat_length1;
+    int shmid_first_buf;
 
     int shm_size = sizeof_shm_recv_buf(BUF_SIZE);
 
@@ -260,7 +263,6 @@ int main( int argc, char** argv ) {
     pid_t cpids[CONS_NUM];
     
     /* create shared memory segment */
-    printf("shm_size = %d.\n", shm_size);
     shmid = shmget(IPC_PRIVATE, B * shm_size, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
     shmid_png_buf = shmget(IPC_PRIVATE, B * BUF_SIZE, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
     shmid_sems = shmget(IPC_PRIVATE, sizeof(sem_t) * NUM_SEMS, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
@@ -271,6 +273,8 @@ int main( int argc, char** argv ) {
     shmid_total_len_inf = shmget(IPC_PRIVATE, sizeof(U64), IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
     shmid_total_len_inf = shmget(IPC_PRIVATE, sizeof(char) * BUF_SIZE, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
     shmid_idat_data = shmget(IPC_PRIVATE, MAX_SIZE, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
+    shmid_idat_length1 = shmget(IPC_PRIVATE, sizeof(int), IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
+    shmid_first_buf = shmget(IPC_PRIVATE, BUF_SIZE, IPC_CREAT | IPC_EXCL | S_IRUSR | S_IWUSR);
 
     if (shmid_idat_data == -1 || shmid == -1 || shmid_png_buf == -1 || shmid_sems == -1 || shmid_fragment == -1 || shmid_front == -1 || shmid_rear == -1 || shmid_count == -1 || shmid_total_len_inf == -1) {
         perror("shmget");
@@ -287,14 +291,16 @@ int main( int argc, char** argv ) {
     count = shmat(shmid_count, NULL, 0);
     total_len_inf = shmat(shmid_total_len_inf, NULL, 0);
     idat_data = shmat(shmid_idat_data, NULL, 0);
+    idat_length1 = shmat(shmid_idat_length1, NULL, 0);
+    first_buf = shmat(shmid_first_buf, NULL, 0);
 
-    if (idat_data == (void *) -1 || p_shm_recv_buf == (void *) -1 || png_buf == (void *) -1 || sems == (void *) -1 || fragment == (void *) -1 || front == (void *) -1 || rear == (void *) -1 || count == (void *) -1 || total_len_inf == (void *) -1) {
+    if (idat_data == (void *) -1 || p_shm_recv_buf == (void *) -1 || png_buf == (void *) -1 || sems == (void *) -1 || fragment == (void *) -1 || front == (void *) -1 || rear == (void *) -1 || count == (void *) -1 || total_len_inf == (void *) -1 || idat_length1 == (void *)-1) {
         perror("shmat");
         abort();
     }
 
     /* initialize semaphore for spaces */
-    sem_init(&sems[0], SEM_PROC, BUF_SIZE);
+    sem_init(&sems[0], SEM_PROC, B);
 
     /* initialize semaphore for items */
     sem_init(&sems[1], SEM_PROC, 0);
@@ -320,6 +326,10 @@ int main( int argc, char** argv ) {
     /* initialize semaphore for idat_data */
     sem_init(&sems[8], SEM_PROC, 1);
 
+    /* initialize semaphore for idat_length1 & first buf*/
+    sem_init(&sems[9], SEM_PROC, 1);
+
+    sem_init(&sems[10], SEM_PROC, 1);
 
     /* initialize fragment number to 0 */
     sem_wait(&sems[2]);
@@ -351,11 +361,28 @@ int main( int argc, char** argv ) {
     *total_len_inf = 0;
     sem_post(&sems[7]);
 
+    sem_wait(&sems[9]);
+    *idat_length1 = 0;
+    sem_post(&sems[9]);
+
+    for (int i=0; i<B; i++) {
+        p_shm_recv_buf[i].seq = -1;
+    }
+
     /* declare variables for catpng logic in consumer */
     U8 *p_buffer = NULL;
-    U64 len_inf = 0;
+
+    int idat_init = 0;
     
     curl_global_init(CURL_GLOBAL_DEFAULT);
+
+    /* timing */
+    if (gettimeofday(&tv, NULL) != 0) {
+        perror("gettimeofday");
+        abort();
+    }
+
+    times[0] = (tv.tv_sec) + tv.tv_usec/1000000.;
 
     for (int i = 0; i < (PROD_NUM + CONS_NUM); i++) {
 
@@ -369,11 +396,11 @@ int main( int argc, char** argv ) {
 
                 while (!fragmentsCollected(fragment)) {
 
+                    sem_wait(&sems[0]);
+
                     CURL *curl_handle;
                     CURLcode res;
                     char url[256];
-
-                    // printf("producer # %d running...\n", i);
 
                     /* init a curl session */
                     curl_handle = curl_easy_init();
@@ -388,7 +415,7 @@ int main( int argc, char** argv ) {
                         strcpy(url, IMG_URL3);
                     } else if (i % 3 == 1) {
                         strcpy(url, IMG_URL);
-                    } else {
+                    } else {  
                         strcpy(url, IMG_URL2);
                     }
 
@@ -397,7 +424,6 @@ int main( int argc, char** argv ) {
                     sem_wait(&sems[2]);
                     sprintf((url + strlen(IMG_URL) + 1), "%s%d", part_string, *fragment);
                     (*fragment)++;
-                    // printf("fragment: %d\n", *fragment);
                     sem_post(&sems[2]);
 
                     RECV_BUF recv_buf;
@@ -424,48 +450,27 @@ int main( int argc, char** argv ) {
 
                     if( res != CURLE_OK) {
                         fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-                    } else {
-                        printf("%lu bytes received in memory %p, seq=%d.\n",  \
-                            recv_buf.size, recv_buf.buf, recv_buf.seq);
                     }
 
-                    // printf("wait for space to be available\n");
-                    sem_wait(&sems[0]);
-                    // printf("space available\n");
-                    sem_wait(&sems[3]);
-                    sem_wait(&sems[4]);
-                    // printf("rear available\n");
-
-                    // for (int j = 0; j < recv_buf.size; j++) {
-                    //     printf("%02x", recv_buf.buf[j]);
-                    // }
-                    // printf("\n");
-
+                    sem_wait(&sems[10]);
+                    
                     p_shm_recv_buf[*rear].size = recv_buf.size;
                     p_shm_recv_buf[*rear].max_size = recv_buf.max_size;
                     p_shm_recv_buf[*rear].seq = recv_buf.seq;
-                    memcpy(png_buf + (*rear), recv_buf.buf, recv_buf.size);
+
+                    memcpy(png_buf + ((*rear)*BUF_SIZE), recv_buf.buf, recv_buf.size);
 
                     *rear = (*rear + 1) % B;
-
-                    // printf("%p\n", png_buf + *rear);
-                    // for (int j = 0; j < recv_buf.size; j++) {
-                    //     printf("%02x", *(png_buf + j +(*rear)));
-                    // }
-                    // printf("\n");
+                    sem_post(&sems[10]);
 
                     recv_buf_cleanup(&recv_buf);
 
-                    sem_post(&sems[4]);
-                    sem_post(&sems[3]);
-                    // printf("post rear\n");
-                    sem_post(&sems[1]);
-                    // printf("item added\n");
-                    /* end critical section */
-
-                    /* cleaning up */
                     curl_easy_cleanup(curl_handle);
+                    
+                    sem_post(&sems[1]);
+                    
                 }
+                exit(0);
 
             } else if ( pid > 0 ) {    /* parent proc */
                 ppids[i] = pid;
@@ -482,94 +487,92 @@ int main( int argc, char** argv ) {
 
                 while(!allInflated(count)) {
 
-                    // printf("consumer # %d running...\n", i - PROD_NUM);
                     usleep(DELAY * 1000);
 
-                    /* start critical section */
-                    sem_wait(&sems[1]);
-                    // printf("item available\n");
-                    sem_wait(&sems[3]);
-                    sem_wait(&sems[4]);
-                    // printf("front available\n");
+                    U64 len_inf = 0;
 
-                    // for (int j = 0; j < p_shm_recv_buf[*front].size; j++) {
-                    //     printf("%02x", *(png_buf + j +(*front)));
-                    // }
-                    // printf("\n");
-
-                    unsigned int file_length = p_shm_recv_buf[*front].size;
-                    p_buffer = malloc(file_length * sizeof(unsigned char));
-
-                    if (p_buffer == NULL) {
-                        perror("malloc");
-                        return errno;
-                    }
-
-                    printf("p_buffer: \n");
-                    for (int j = 0; j < p_shm_recv_buf[*front].size; j++) {
-                        p_buffer[j] = *(png_buf + j +(*front));
-                        printf("%02x", p_buffer[j]);
-                    }
-                    printf("\n");
-
-                    /* calculate width */
-                    // printf("calculate width\n");
-
-                    U8 width[9];
-                    sprintf(width, "%02x%02x%02x%02x", p_buffer[16], p_buffer[17], p_buffer[18], p_buffer[19]);
-                    int w = strtol(width, NULL, 16);
-
-                    /* calculate height */
-
-                    U8 height[9];
-                    sprintf(height, "%02x%02x%02x%02x", p_buffer[20], p_buffer[21], p_buffer[22], p_buffer[23]);
-                    int h = strtol(height, NULL, 16);
-
-                    // printf("calculate data length\n");
-
-                    /* calculate data length */
-
-                    U8 data_length[9];
-                    sprintf(data_length, "%02x%02x%02x%02x", p_buffer[33], p_buffer[34], p_buffer[35], p_buffer[36]);
-                    unsigned int len = strtol(data_length, NULL, 16);
-
-                    // printf("i is %d\n", i);
-                    // printf("num of producers is %d\n", PROD_NUM);
-
-                    U8 *buf_inf = malloc(h * (w * 4 + 1));
-
-                    /* inflate data */
-                    int ret = mem_inf(buf_inf, &len_inf, (p_buffer + 41), len);
-
-                    if (ret != 0) { /* failure */
-                        fprintf(stderr,"mem_inf failed. ret = %d.\n", ret);
-                        return ret;
-                    }
-
-                    /* PUT INFLATED DATA IN IDAT_DATA */
-
-                    sem_wait(&sems[7]);
-                    *total_len_inf += len_inf;
-                    sem_post(&sems[7]);
-
-                    *front = (*front + 1) % B;
+                    sem_wait(&sems[10]);
 
                     sem_wait(&sems[6]);
-                    // printf("increment count\n");
-                    (*count)++;
-                    // printf("count: %d\n", *count);
+                    int valid = 0;
+                    for (int k=0; k<B; k++) {
+                        if ((p_shm_recv_buf[k].seq) == *count) {
+                            *front = k;
+                            valid = 1;
+                        }
+                    }
                     sem_post(&sems[6]);
+                    
 
-                    free(buf_inf);
-                    free(p_buffer);
+                    if (!valid) {
+                        usleep(10000);
+                    } else {
+                        sem_wait(&sems[1]);
 
-                    sem_post(&sems[4]);
-                    sem_post(&sems[3]);
-                    // printf("post front\n");
-                    sem_post(&sems[0]);
-                    // printf("space available\n");
-                    /* end critical section */
+                        unsigned int file_length = p_shm_recv_buf[*front].size;
+
+                        p_buffer = malloc(file_length * sizeof(unsigned char));
+
+                        if (p_buffer == NULL) {
+                            perror("malloc");
+                            return errno;
+                        }
+
+                        memcpy(p_buffer, png_buf + ((*front)*BUF_SIZE), file_length);
+
+                        /* calculate data length */
+
+                        U8 data_length[9];
+                        sprintf(data_length, "%02x%02x%02x%02x", p_buffer[33], p_buffer[34], p_buffer[35], p_buffer[36]);
+                        unsigned int len = strtol(data_length, NULL, 16);
+
+                        if (p_shm_recv_buf[*front].seq == 0) {
+                            *idat_length1 = len;
+                            memcpy(first_buf, png_buf + ((*front)*BUF_SIZE), file_length);
+                        }
+
+                        *front = (*front + 1) % B;
+
+                        U8 width[9];
+                        sprintf(width, "%02x%02x%02x%02x", p_buffer[16], p_buffer[17], p_buffer[18], p_buffer[19]);
+                        int w = strtol(width, NULL, 16);
+
+                        /* calculate height */
+
+                        U8 height[9];
+                        sprintf(height, "%02x%02x%02x%02x", p_buffer[20], p_buffer[21], p_buffer[22], p_buffer[23]);
+                        int h = strtol(height, NULL, 16);
+
+                        U8 *buf_inf = malloc(h * (w * 4 + 1));
+
+                        /* inflate data */
+                        int ret = mem_inf(buf_inf, &len_inf, (p_buffer + 41), len);
+
+                        if (ret != 0) { /* failure */
+                            fprintf(stderr,"mem_inf failed. ret = %d.\n", ret);
+                            return ret;
+                        }
+
+                        /* PUT INFLATED DATA IN IDAT_DATA */
+
+                        sem_wait(&sems[7]);
+                        memcpy((idat_data + (*total_len_inf)), buf_inf, len_inf);
+                        *total_len_inf += len_inf;
+                        sem_post(&sems[7]);
+
+                        sem_wait(&sems[6]);
+                        (*count)++;
+                        sem_post(&sems[6]);
+
+                        free(buf_inf);
+                        free(p_buffer);
+
+                        sem_post(&sems[0]);
+                    }
+                    sem_post(&sems[10]);
                 }
+
+                exit(0);
 
             } else if ( pid > 0 ) {    /* parent proc */
                 cpids[i - PROD_NUM] = pid;
@@ -585,65 +588,29 @@ int main( int argc, char** argv ) {
     if ( pid > 0 ) {            /* parent process */
         for (int i = 0; i < PROD_NUM; i++ ) {
             waitpid(ppids[i], &state, 0);
-            if (WIFEXITED(state)) {
-                printf("Child ppid[%d]=%d terminated with state: %d.\n", i, ppids[i], state);
-            }
         }
         for (int i = 0; i < CONS_NUM; i++ ) {
             waitpid(cpids[i], &state, 0);
-            if (WIFEXITED(state)) {
-                printf("Child cpid[%d]=%d terminated with state: %d.\n", i, cpids[i], state);
-            }
         }
     }
 
     /* catpng logic */
 
-    sem_wait(&sems[3]);
     char *outputFile = "all.png";
     FILE *out_fp = fopen(outputFile, "wb+");
 
     U32 crc_val = 0;
 
-    unsigned char *final_buf = malloc(MAX_SIZE);
-    p_buffer = malloc(p_shm_recv_buf[*front].size * sizeof(char));
-
-    if (p_buffer == NULL) {
-        perror("malloc");
-        return errno;
-    }
-
-    sem_wait(&sems[5]);
-    for (int j = 0; j < p_shm_recv_buf[*front].size; j++) {
-        p_buffer[j] = *(png_buf + j + (*front));
-    }
-    sem_post(&sems[5]);
-    sem_post(&sems[3]);
-
-    /* stage png header */
-    U8 png_id[] = {0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
-    fwrite(&png_id, 1, PNG_SIG_SIZE, fp);
-
-    /* stage IHDR */
-    U8 ihdr_length[] = {0x00, 0x00, 0x00, 0x0d};
-    U8 ihdr_type[] = {0x49, 0x48, 0x44, 0x52};
-    U8 ihdr_chunk[] = {0x00, 0x00, 0x01, 0x90, 0x00, 0x00, 0x01, 0x2C, 0x08, 0x06, 0x00, 0x00, 0x00};
-    U8 ihdr_crc[4];
-
-    /* calculate and copy IHDR CRC to file */
-    crc_val = crc((p_buffer + 12), (CHUNK_LEN_SIZE + DATA_IHDR_SIZE));
-    U32 transform_crc = htonl(crc_val);
-    memcpy(ihdr_crc, &transform_crc, 4);
-
-    fwrite(&ihdr_length, 1, CHUNK_LEN_SIZE, out_fp);
-    fwrite(&ihdr_type, 1, CHUNK_TYPE_SIZE, out_fp);
-    fwrite(&ihdr_chunk, 1, 13, out_fp);
-    fwrite(&ihdr_crc, 1, CHUNK_CRC_SIZE, out_fp);
-
     /* deflate data */
     U64 len_def = 0;
-    U8 *gp_buf_def = malloc(total_len_inf);
-    int ret = mem_def(gp_buf_def, &len_def, idat_data, total_len_inf, Z_DEFAULT_COMPRESSION);
+    sem_wait(&sems[7]);
+    U8 *gp_buf_def = malloc((*total_len_inf));
+
+    sem_wait(&sems[8]);
+    int ret = mem_def(gp_buf_def, &len_def, idat_data, *total_len_inf, Z_DEFAULT_COMPRESSION);
+    sem_post(&sems[8]);
+
+    sem_post(&sems[7]);
 
      /* failure */
     if (ret != 0) { 
@@ -651,27 +618,48 @@ int main( int argc, char** argv ) {
         return ret;
     }
 
+    sem_wait(&sems[9]);
+
+    U8 *png_buffer = malloc((57+len_def)*sizeof(U8));
+    memcpy(png_buffer, first_buf, 20);
+
+    /* copy IHDR height to buffer */
+    unsigned int total_height = 6*50;
+    unsigned int total_width = 400*50;
+
+    total_height = htonl(total_height);
+    memcpy((png_buffer + 20), &total_height, 4);
+
+    /* copy rest of IHDR to buffer */
+    memcpy((png_buffer + 24), (first_buf + 24), 5);
+
+    /* calculate and copy IHDR CRC to file */
+    crc_val = crc((png_buffer + 12), (CHUNK_LEN_SIZE + DATA_IHDR_SIZE));
+    U32 transform_crc = htonl(crc_val);
+    memcpy((png_buffer + 29), &transform_crc, 4);
+
     /* write IDAT length to file */
     U32 transform_len_def = htonl(len_def);
-    fwrite(&transform_len_def, 1, CHUNK_LEN_SIZE, out_fp);
+    memcpy((png_buffer + 33), &transform_len_def, 4);
 
-    /* write IDAT type to file */
-    U8 idat_type[] = {0x49, 0x44, 0x41, 0x54};
-    fwrite(&idat_type, 1, CHUNK_TYPE_SIZE, out_fp);
+    /* copy IDAT type to buffer */
+    memcpy((png_buffer + 37), (first_buf + 37), CHUNK_TYPE_SIZE);
 
-    /* write IDAT data to file */
-    fwrite(gp_buf_def, len_def, 1, out_fp);
+    /* copy IDAT data to buffer */
+    memcpy((png_buffer + 41), gp_buf_def, len_def);
 
-    /* calculate and copy IDAT CRC to file */
-    crc_val = crc((p_buffer + 37), (len_def + CHUNK_TYPE_SIZE));
+    /* calculate and copy IDAT CRC to buffer */
+    crc_val = crc((png_buffer + 37), (len_def + CHUNK_TYPE_SIZE));
     U32 transform_idat_crc = htonl(crc_val);
-    fwrite(&transform_idat_crc, 1, CHUNK_CRC_SIZE, out_fp);
+    memcpy((png_buffer + 41 + len_def), &transform_idat_crc, CHUNK_CRC_SIZE);
+
+    /* copy IEND chunk to buffer */
+    memcpy((png_buffer + 45 + len_def), (first_buf + 45 + *idat_length1) , 12);
+
+    sem_post(&sems[9]);
 
     /* write IEND chunk to file */
-    U8 data_length[9];
-    sprintf(data_length, "%02x%02x%02x%02x", p_buffer[33], p_buffer[34], p_buffer[35], p_buffer[36]);
-    unsigned int len = strtol(data_length, NULL, 16);
-    fwrite(p_buffer + 45 + len, 1, 12, out_fp);
+    fwrite(png_buffer, (57+len_def)*sizeof(U8), 1, out_fp);
 
     fclose(out_fp);
 
@@ -681,10 +669,11 @@ int main( int argc, char** argv ) {
         abort();
     }
     times[1] = (tv.tv_sec) + tv.tv_usec/1000000.;
-    printf("%s execution time: %.6lf seconds\n", argv[0], times[1] - times[0]);
+    printf("paster2 execution time: %.6lf seconds\n", (times[1] - times[0]));
 
     free(p_buffer);
     free(gp_buf_def);
+    free(png_buffer);
 
     /* detach from shared memory */
     shmdt(p_shm_recv_buf);
@@ -695,6 +684,7 @@ int main( int argc, char** argv ) {
     shmdt(rear);
     shmdt(count);
     shmdt(total_len_inf);
+    shmdt(idat_length1);
 
     shmctl(shmid, IPC_RMID, NULL);
     shmctl(shmid_png_buf, IPC_RMID, NULL);
@@ -704,6 +694,7 @@ int main( int argc, char** argv ) {
     shmctl(shmid_rear, IPC_RMID, NULL);
     shmctl(shmid_count, IPC_RMID, NULL);
     shmctl(shmid_total_len_inf, IPC_RMID, NULL);
+    shmctl(shmid_idat_length1, IPC_RMID, NULL);
 
     for (int i = 0; i < NUM_SEMS; i++) {
         sem_destroy(&sems[i]);
@@ -714,7 +705,3 @@ int main( int argc, char** argv ) {
     return 0;
 
 }
-
-// check if sem[5] is necessary
-// check if timing info in right spot
-// clean up extra semaphores
