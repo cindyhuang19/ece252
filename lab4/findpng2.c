@@ -44,14 +44,19 @@ typedef struct recv_buf2 {
                      /* <0 indicates an invalid seq number */
 } RECV_BUF;
 
-typedef struct stack {
-    unsigned int capacity;
-    unsigned int top;
-    char **urls;
-} STACK;
+typedef struct list {
+    unsigned int head;
+    unsigned int size;
+} LIST;
+
+typedef struct node {
+    struct node *next;
+    char *url;
+} NODE;
 
 /* global variables */
-STACK *frontier;
+LIST *frontier;
+int pngs_found;
 
 htmlDocPtr mem_getdoc(char *buf, int size, const char *url);
 xmlXPathObjectPtr getnodeset (xmlDocPtr doc, xmlChar *xpath);
@@ -65,15 +70,16 @@ int write_file(const char *path, const void *in, size_t len);
 CURL *easy_handle_init(RECV_BUF *ptr, const char *url);
 int process_data(CURL *curl_handle, RECV_BUF *p_recv_buf);
 
-/* helper function for visited URLs heap */
+/* helper function for visited URLs hash table */
 int add_to_visited(const void *url);
 
-/* helper functions for frontier stack */
-STACK * init_stack(unsigned int cap);
+/* helper functions for frontier list */
+void init_list();
 int push_to_frontier(const void *url);
 char * pop_from_frontier();
 int is_empty();
-void cleanup_stack();
+void cleanup_list();
+void print_list();
 
 htmlDocPtr mem_getdoc(char *buf, int size, const char *url)
 {
@@ -139,8 +145,20 @@ int find_http(char *buf, int size, int follow_relative_links, const char *base_u
                 xmlFree(old);
             }
             if ( href != NULL && !strncmp((const char *)href, "http", 4) ) {
-                printf("href: %s\n", href);
-                push_to_frontier(href);
+                // printf("href: %s\n", href);
+                char url[256];
+                strcpy(url, (char*) href);
+                // printf("url: %s\n", url);
+
+                ENTRY *ep;
+                ENTRY e;
+                e.key = url;
+                e.data = 0;
+
+                ep = hsearch(e, FIND);
+                if (ep == NULL) {
+                    push_to_frontier(url);
+                }
             }
             xmlFree(href);
         }
@@ -170,7 +188,7 @@ size_t header_cb_curl(char *p_recv, size_t size, size_t nmemb, void *userdata)
     RECV_BUF *p = userdata;
 
 #ifdef DEBUG1_
-    printf("%s", p_recv);
+    // printf("%s", p_recv);
 #endif /* DEBUG1_ */
     if (realsize > strlen(ECE252_HEADER) &&
 	strncmp(p_recv, ECE252_HEADER, strlen(ECE252_HEADER)) == 0) {
@@ -255,7 +273,6 @@ void cleanup(CURL *curl, RECV_BUF *ptr)
         curl_easy_cleanup(curl);
         curl_global_cleanup();
         recv_buf_cleanup(ptr);
-        cleanup_stack();
 }
 /**
  * @brief output data in memory to a file
@@ -278,7 +295,7 @@ int write_file(const char *path, const void *in, size_t len)
         return -1;
     }
 
-    fp = fopen(path, "wb");
+    fp = fopen(path, "a+");
     if (fp == NULL) {
         perror("fopen");
         return -2;
@@ -370,24 +387,30 @@ int process_html(CURL *curl_handle, RECV_BUF *p_recv_buf)
 
     curl_easy_getinfo(curl_handle, CURLINFO_EFFECTIVE_URL, &url);
     find_http(p_recv_buf->buf, p_recv_buf->size, follow_relative_link, url); 
-    sprintf(fname, "./output_%d.html", pid);
-    printf("process html\n");
-    return write_file(fname, p_recv_buf->buf, p_recv_buf->size);
+    // sprintf(fname, "./output_%d.html", pid);
+    // printf("process html\n");
+    // write_file(fname, p_recv_buf->buf, p_recv_buf->size);
+    return 0;
 }
 
 int process_png(CURL *curl_handle, RECV_BUF *p_recv_buf)
 {
     pid_t pid =getpid();
-    char fname[256];
+    char *fname = "png_urls.txt";
     char *eurl = NULL;          /* effective URL */
     curl_easy_getinfo(curl_handle, CURLINFO_EFFECTIVE_URL, &eurl);
     if ( eurl != NULL) {
         printf("The PNG url is: %s\n", eurl);
     }
 
-    sprintf(fname, "./output_%d_%d.png", p_recv_buf->seq, pid);
-    printf("process png\n");
-    return write_file(fname, p_recv_buf->buf, p_recv_buf->size);
+    sprintf(eurl, "%s\n", eurl);
+    // printf("process png\n");
+    pngs_found++;
+    printf("\n");
+    printf("pngs found: %d\n", pngs_found);
+    printf("\n");
+
+    return write_file(fname, eurl, strlen(eurl));
 }
 /**
  * @brief process teh download data by curl
@@ -427,20 +450,18 @@ int process_data(CURL *curl_handle, RECV_BUF *p_recv_buf)
     } else if ( strstr(ct, CT_PNG) ) {
         return process_png(curl_handle, p_recv_buf);
     } else {
-        sprintf(fname, "./output_%d", pid);
+        // sprintf(fname, "./output_%d", pid);
     }
 
-    printf("process data\n");
-    return write_file(fname, p_recv_buf->buf, p_recv_buf->size);
+    // write_file(fname, p_recv_buf->buf, p_recv_buf->size);
+    return 0;
 }
 
 int add_to_visited(const void *url) {
 
-    ENTRY e;
-    e.key = NULL;
     ENTRY *ep;
-
-    memcpy(e.key, url, strlen(url));
+    ENTRY e;
+    e.key = url;
     e.data = 0;
 
     ep = hsearch(e, ENTER);
@@ -448,17 +469,17 @@ int add_to_visited(const void *url) {
     if (ep == NULL) {
         printf("entry failed\n");
         return 1;
+    } else {
+        printf("entry added or already exists\n");
+        printf("added: %s\n", (char*) url);
     }
     return 0;
 }
 
-STACK * init_stack(unsigned int cap) {
-    STACK *s;
-    s = (STACK*) malloc (sizeof(STACK));
-    s->capacity = cap;
-    s->top = -1;
-    s->urls = (char **) malloc (sizeof(char*) * cap);
-    return s;
+void init_list() {
+    frontier = (LIST*) malloc (sizeof(LIST));
+    frontier->head = NULL;
+    frontier->size = 0;
 }
 
 int push_to_frontier(const void *url) {
@@ -471,33 +492,100 @@ int push_to_frontier(const void *url) {
         // need semaphore for this?
         // will frontier ever be full?
         // need to check if visited before actually visiting
-        frontier->top++;
-        frontier->urls[frontier->top] = url;
-        // printf("pushed to top: %s\n", frontier->urls[frontier->top]);
+        NODE *tmp = frontier->head;
+        NODE *new_node = (NODE*) malloc(sizeof(NODE));
+        new_node->url = malloc(sizeof(char) * (strlen(url) + 1));
+        strcpy(new_node->url, url);
+        new_node->next = tmp;
+        frontier->head = new_node;
+        frontier->size++;
+        printf("pushed to front: %s\n", new_node->url);
+        // print_list();
     }
     // printf("done push\n");
     return 0;
 }
 
+void print_list() {
+    NODE *current = frontier->head;
+    while (current != NULL) {
+        printf("url is: %s\n", current->url);
+        current = current->next;
+    }
+}
+
 char * pop_from_frontier() {
+    // printf("list before popping: \n");
+    // print_list();
     if (!is_empty()) {
-        frontier->top--;
-        return frontier->urls[frontier->top + 1];
+        NODE *tmp = NULL;
+        tmp = frontier->head;
+
+        NODE *next = tmp->next;
+        char *url = malloc(sizeof(char) * (strlen(tmp->url) + 1));
+        strcpy(url, tmp->url);
+        free(tmp->url);
+        free(tmp);
+        frontier->head = next;
+        frontier->size--;
+        // printf("\n");
+        // printf("popping: %s\n", url);
+        // printf("\n");
+        // printf("list after popping: \n");
+        // print_list();
+        return url;
     }
     return 0;
 }
 
 int is_empty() {
-    return (frontier->top == -1);
+    return (frontier->size == 0);
 }
 
-void cleanup_stack() {
-    free(frontier->urls);
+void cleanup_list() {
+    while (!is_empty()) {
+        // printf("cleaning up list\n");
+        char *url = pop_from_frontier();
+        free(url);
+    }
     free(frontier);
+}
+
+void web_crawler(char * url) {
+
+    CURL *curl_handle;
+    CURLcode res;
+    RECV_BUF recv_buf;
+
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl_handle = easy_handle_init(&recv_buf, url);
+
+    if ( curl_handle == NULL ) {
+        fprintf(stderr, "Curl initialization failed. Exiting...\n");
+        curl_global_cleanup();
+        abort();
+    }
+    /* get it! */
+    res = curl_easy_perform(curl_handle);
+
+    if( res != CURLE_OK) {
+        fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        cleanup(curl_handle, &recv_buf);
+        return;
+        // exit(1);
+    } else {
+        printf("%lu bytes received in memory %p, seq=%d.\n", recv_buf.size, recv_buf.buf, recv_buf.seq);
+    }
+
+    /* process the download data */
+    process_data(curl_handle, &recv_buf);
+    cleanup(curl_handle, &recv_buf);
+
 }
 
 int main( int argc, char** argv ) {
 
+    /* variables for parameters */
     int c;
     int t = 1;
     int m = 50;
@@ -512,7 +600,7 @@ int main( int argc, char** argv ) {
         switch (c) {
         case 't':
             t = strtoul(optarg, NULL, 10);
-            printf("option -t specifies a value of %d.\n", t);
+            // printf("option -t specifies a value of %d.\n", t);
             if (t <= 0) {
                 fprintf(stderr, "%s: %s > 0 -- 't'\n", argv[0], str);
                 return -1;
@@ -520,7 +608,7 @@ int main( int argc, char** argv ) {
             break;
         case 'm':
             m = strtoul(optarg, NULL, 10);
-	        printf("option -m specifies a value of %d.\n", m);
+	        // printf("option -m specifies a value of %d.\n", m);
             if (m < 0) {
                 fprintf(stderr, "%s: %s >= 0 -- 'm'\n", argv[0], str);
                 return -1;
@@ -529,65 +617,113 @@ int main( int argc, char** argv ) {
         case 'v':
             v = 1;
             log_file = optarg;
-	        printf("option -n specifies a value of %s.\n", log_file);
+	        // printf("option -v specifies a value of %s.\n", log_file);
             break;
         default:
             return -1;
         }
     }
 
+    /* get and verify seed_url parameter */
     seed_url = argv[optind];
     if (seed_url == NULL) {
         printf("Usage: findpng2 <url>\n");
         return 1;
     }
+
+    /* print options and parameters (remove at end) */
     printf("t: %d, m: %d, v: %d, log_file: %s\n", t, m, v, log_file);
 
-    frontier = init_stack(NUM_URLS);
-    printf("frontier capacity: %d, size: %d\n", frontier->capacity, (frontier->top + 1));
+    /* variables for web crawler logic */
+
+    init_list();
+    pngs_found = 0;
+
+    /* create empty png_urls file */
+    FILE *fp = NULL;
+    fp = fopen(png_file, "w+");
+    if (fp == NULL) {
+        perror("fopen");
+        return -2;
+    }
+    fclose(fp);
+
+    /* create empty log file */
+    if (v) {
+        fp = fopen(log_file, "w+");
+        if (fp == NULL) {
+            perror("fopen");
+            return -2;
+        }
+        fclose(fp);
+    }
+
+    /* web crawler logic */
 
     if (t == 1) {
         printf("running single-threaded version\n");
 
-        CURL *curl_handle;
-        CURLcode res;
-        RECV_BUF recv_buf;
-            
-        printf("URL is %s\n", seed_url);
+        char *current_url = seed_url;
+        printf("URL is %s\n", current_url);
 
         if (hcreate(NUM_URLS) == 0) {
             printf("Failed to create hash table\n");
             return 1;
         }
 
-        curl_global_init(CURL_GLOBAL_DEFAULT);
-        curl_handle = easy_handle_init(&recv_buf, seed_url);
+        web_crawler(current_url);
+        add_to_visited(current_url);
+        printf("first url: %s\n", current_url);
+        printf("empty? %d\n", is_empty());
 
-        if ( curl_handle == NULL ) {
-            fprintf(stderr, "Curl initialization failed. Exiting...\n");
-            curl_global_cleanup();
-            abort();
-        }
-        /* get it! */
-        res = curl_easy_perform(curl_handle);
+        ENTRY *ep;
+        ENTRY e;
+        char tmp[256];
+        strcpy(tmp, current_url);
+        e.key = tmp;
+        e.data = 0;
 
-        if( res != CURLE_OK) {
-            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-            cleanup(curl_handle, &recv_buf);
-            exit(1);
-        } else {
-            printf("%lu bytes received in memory %p, seq=%d.\n", recv_buf.size, recv_buf.buf, recv_buf.seq);
+        ep = hsearch(e, FIND);
+        if(ep != NULL) {
+            printf("added\n");
         }
 
-        /* process the download data */
-        process_data(curl_handle, &recv_buf);
+        while (pngs_found != m && !is_empty()) {
+            
+            current_url = pop_from_frontier();
+            printf("current url: %s\n", current_url);
+            
+            /* check if already visited */
+            ENTRY *ep;
+            ENTRY e;
+            char tmp[256];
+            strcpy(tmp, current_url);
+            e.key = tmp;
+            e.data = 0;
 
-        // printf("popped: %s\n", pop_from_frontier());
+            ep = hsearch(e, FIND);
+
+            printf("visited? %p\n", ep);
+
+            if (ep == NULL) {
+                printf("URL is %s\n", current_url);
+                web_crawler(current_url);
+                add_to_visited(current_url);
+                if (v) {
+                    sprintf(current_url, "%s\n", current_url);
+                    write_file(log_file, current_url, strlen(current_url));
+                }
+            }
+            free(current_url);
+        }
 
         /* cleaning up */
-        cleanup(curl_handle, &recv_buf);
+        cleanup_list();
         hdestroy();
+    } else {
+        printf("running multi-threaded version\n");
     }
+
     return 0;
 }
 
@@ -620,4 +756,6 @@ int main( int argc, char** argv ) {
 
 /* NOTES:
 - Look at comments in push_to_frontier
+- test pop_from_frontier
+- test add_to_visited
 */
