@@ -491,9 +491,6 @@ void init_list() {
 int push_to_frontier(const char *url) {
 
     if (!is_visited(url)) {
-        // need semaphore for this?
-        // will frontier ever be full?
-        // need to check if visited before actually visiting
         NODE *tmp = frontier->head;
         NODE *new_node = (NODE*) malloc(sizeof(NODE));
         new_node->url = malloc(sizeof(char) * (strlen(url) + 1));
@@ -544,8 +541,8 @@ int is_empty() {
 }
 
 void cleanup_list() {
+    // printf("cleaning up list\n");
     while (!is_empty()) {
-        // printf("cleaning up list\n");
         char *url = pop_from_frontier();
         free(url);
     }
@@ -676,9 +673,6 @@ int main( int argc, char** argv ) {
             }
             free(current_url);
         }
-
-        /* cleaning up */
-        cleanup_list();
     } else {
         printf("running multi-threaded version\n");
     }
@@ -686,6 +680,9 @@ int main( int argc, char** argv ) {
     if (!v) {
         remove(log_file);        
     }
+    /* cleaning up */
+    cleanup_list();
+
     return 0;
 }
 
@@ -699,7 +696,6 @@ int main( int argc, char** argv ) {
 // terminate when no more URLs in frontier (to be visited) or number of PNGs found
 // counters - PNG URLs found, threads waiting for new URL
 
-// hash table for visited URLs list - gclib hsearch(3)
 // if visited, don't add to frontier
 
 // empty png_urls.txt file if empty search result
@@ -709,15 +705,11 @@ int main( int argc, char** argv ) {
 
 // print: findpng2 execution time: S seconds
 
-/*
-    typedef struct entry {
-        char *key;
-        void *data;
-    }
-*/
-
 /* NOTES:
-- Look at comments in push_to_frontier
-- test pop_from_frontier
-- test add_to_visited
+- protect any writes to files
+- protect pngs_found
+- protect push and pop from frontier
+- protect add_to_visited
+- treat add_to_visited as a writer
+- is_visited is a reader (multiple readers can access as long as no writer is accessing file)
 */
