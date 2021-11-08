@@ -16,8 +16,8 @@
 // #include <semaphore.h>
 // #include <errno.h>
 // #include <arpa/inet.h>
-// #include <time.h>
-// #include <sys/time.h>
+#include <time.h>
+#include <sys/time.h>
 // #include <sys/ipc.h>
 
 #define SEED_URL "http://ece252-1.uwaterloo.ca/lab4/"
@@ -653,6 +653,18 @@ int main( int argc, char** argv ) {
     }
     fclose(fp);
 
+    /* timing */
+
+    double times[2];
+    struct timeval tv;
+
+    if (gettimeofday(&tv, NULL) != 0) {
+        perror("gettimeofday");
+        abort();
+    }
+
+    times[0] = (tv.tv_sec) + tv.tv_usec/1000000.;
+
     /* web crawler logic */
 
     if (t == 1) {
@@ -676,6 +688,14 @@ int main( int argc, char** argv ) {
     } else {
         printf("running multi-threaded version\n");
     }
+
+    /* timing */
+    if (gettimeofday(&tv, NULL) != 0) {
+        perror("gettimeofday");
+        abort();
+    }
+    times[1] = (tv.tv_sec) + tv.tv_usec/1000000.;
+    printf("paster2 execution time: %.6lf seconds\n", (times[1] - times[0]));
 
     if (!v) {
         remove(log_file);        
