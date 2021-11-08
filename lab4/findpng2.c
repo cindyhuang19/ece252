@@ -57,6 +57,7 @@ typedef struct node {
 /* global variables */
 LIST *frontier;
 int pngs_found;
+char *log_file = "log.txt";
 
 htmlDocPtr mem_getdoc(char *buf, int size, const char *url);
 xmlXPathObjectPtr getnodeset (xmlDocPtr doc, xmlChar *xpath);
@@ -71,11 +72,12 @@ CURL *easy_handle_init(RECV_BUF *ptr, const char *url);
 int process_data(CURL *curl_handle, RECV_BUF *p_recv_buf);
 
 /* helper function for visited URLs hash table */
-int add_to_visited(const void *url);
+int add_to_visited(const char *url);
+int is_visited(const char *url);
 
 /* helper functions for frontier list */
 void init_list();
-int push_to_frontier(const void *url);
+int push_to_frontier(const char *url);
 char * pop_from_frontier();
 int is_empty();
 void cleanup_list();
@@ -88,7 +90,7 @@ htmlDocPtr mem_getdoc(char *buf, int size, const char *url)
     htmlDocPtr doc = htmlReadMemory(buf, size, url, NULL, opts);
     
     if ( doc == NULL ) {
-        fprintf(stderr, "Document not parsed successfully.\n");
+        // fprintf(stderr, "Document not parsed successfully.\n");
         return NULL;
     }
     return doc;
@@ -113,7 +115,7 @@ xmlXPathObjectPtr getnodeset (xmlDocPtr doc, xmlChar *xpath)
     }
     if(xmlXPathNodeSetIsEmpty(result->nodesetval)){
         xmlXPathFreeObject(result);
-        printf("No result\n");
+        // printf("No result\n");
         return NULL;
     }
     return result;
@@ -146,17 +148,10 @@ int find_http(char *buf, int size, int follow_relative_links, const char *base_u
             }
             if ( href != NULL && !strncmp((const char *)href, "http", 4) ) {
                 // printf("href: %s\n", href);
-                char url[256];
-                strcpy(url, (char*) href);
+                char *url = (char *) href;
                 // printf("url: %s\n", url);
 
-                ENTRY *ep;
-                ENTRY e;
-                e.key = url;
-                e.data = 0;
-
-                ep = hsearch(e, FIND);
-                if (ep == NULL) {
+                if (!is_visited(url)) {
                     push_to_frontier(url);
                 }
             }
@@ -380,10 +375,10 @@ CURL *easy_handle_init(RECV_BUF *ptr, const char *url)
 
 int process_html(CURL *curl_handle, RECV_BUF *p_recv_buf)
 {
-    char fname[256];
+    // char fname[256];
     int follow_relative_link = 1;
     char *url = NULL; 
-    pid_t pid =getpid();
+    // pid_t pid =getpid();
 
     curl_easy_getinfo(curl_handle, CURLINFO_EFFECTIVE_URL, &url);
     find_http(p_recv_buf->buf, p_recv_buf->size, follow_relative_link, url); 
@@ -395,22 +390,23 @@ int process_html(CURL *curl_handle, RECV_BUF *p_recv_buf)
 
 int process_png(CURL *curl_handle, RECV_BUF *p_recv_buf)
 {
-    pid_t pid =getpid();
+    // pid_t pid =getpid();
     char *fname = "png_urls.txt";
     char *eurl = NULL;          /* effective URL */
     curl_easy_getinfo(curl_handle, CURLINFO_EFFECTIVE_URL, &eurl);
     if ( eurl != NULL) {
-        printf("The PNG url is: %s\n", eurl);
+        // printf("The PNG url is: %s\n", eurl);
     }
 
-    sprintf(eurl, "%s\n", eurl);
+    char tmp[256];
+    sprintf(tmp, "%s\n", eurl);
     // printf("process png\n");
     pngs_found++;
-    printf("\n");
+    // printf("\n");
     printf("pngs found: %d\n", pngs_found);
-    printf("\n");
+    // printf("\n");
 
-    return write_file(fname, eurl, strlen(eurl));
+    return write_file(fname, tmp, strlen(tmp));
 }
 /**
  * @brief process teh download data by curl
@@ -422,26 +418,26 @@ int process_png(CURL *curl_handle, RECV_BUF *p_recv_buf)
 int process_data(CURL *curl_handle, RECV_BUF *p_recv_buf)
 {
     CURLcode res;
-    char fname[256];
-    pid_t pid =getpid();
+    // char fname[256];
+    // pid_t pid =getpid();
     long response_code;
 
     res = curl_easy_getinfo(curl_handle, CURLINFO_RESPONSE_CODE, &response_code);
     if ( res == CURLE_OK ) {
-	    printf("Response code: %ld\n", response_code);
+	    // printf("Response code: %ld\n", response_code);
     }
 
     if ( response_code >= 400 ) { 
-    	fprintf(stderr, "Error.\n");
+    	// fprintf(stderr, "Error.\n");
         return 1;
     }
 
     char *ct = NULL;
     res = curl_easy_getinfo(curl_handle, CURLINFO_CONTENT_TYPE, &ct);
     if ( res == CURLE_OK && ct != NULL ) {
-    	printf("Content-Type: %s, len=%ld\n", ct, strlen(ct));
+    	// printf("Content-Type: %s, len=%ld\n", ct, strlen(ct));
     } else {
-        fprintf(stderr, "Failed obtain Content-Type\n");
+        // fprintf(stderr, "Failed obtain Content-Type\n");
         return 2;
     }
 
@@ -457,22 +453,32 @@ int process_data(CURL *curl_handle, RECV_BUF *p_recv_buf)
     return 0;
 }
 
-int add_to_visited(const void *url) {
+int add_to_visited(const char *url) {
+    char tmp[256];
+    sprintf(tmp, "%s\n", url);
+    write_file(log_file, tmp, strlen(tmp));
+    return 0;
+}
 
-    ENTRY *ep;
-    ENTRY e;
-    e.key = url;
-    e.data = 0;
-
-    ep = hsearch(e, ENTER);
-
-    if (ep == NULL) {
-        printf("entry failed\n");
-        return 1;
-    } else {
-        printf("entry added or already exists\n");
-        printf("added: %s\n", (char*) url);
+int is_visited(const char *url) {
+    FILE *fp;
+    fp = fopen(log_file, "r");
+    if (fp == NULL) {
+        perror("fopen");
+        return -2;
     }
+    char str[256];
+    while (fgets(str, sizeof(str), fp)) {
+        char tmp[256];
+        sprintf(tmp, "%s\n", url);
+        // printf("1: %s\n", tmp);
+        // printf("2: %s\n", str);
+        if (strcmp(str, tmp) == 0) {
+            fclose(fp);
+            return 1;
+        }
+    }
+    fclose(fp);
     return 0;
 }
 
@@ -482,13 +488,9 @@ void init_list() {
     frontier->size = 0;
 }
 
-int push_to_frontier(const void *url) {
+int push_to_frontier(const char *url) {
 
-    ENTRY e;
-    e.key = url;
-    e.data = 0;
-
-    if (hsearch(e, FIND) == NULL) {
+    if (!is_visited(url)) {
         // need semaphore for this?
         // will frontier ever be full?
         // need to check if visited before actually visiting
@@ -499,7 +501,7 @@ int push_to_frontier(const void *url) {
         new_node->next = tmp;
         frontier->head = new_node;
         frontier->size++;
-        printf("pushed to front: %s\n", new_node->url);
+        // printf("pushed to front: %s\n", new_node->url);
         // print_list();
     }
     // printf("done push\n");
@@ -528,14 +530,13 @@ char * pop_from_frontier() {
         free(tmp);
         frontier->head = next;
         frontier->size--;
+        // printf("list after popping: \n");
+        // print_list();
         // printf("\n");
         // printf("popping: %s\n", url);
         // printf("\n");
-        // printf("list after popping: \n");
-        // print_list();
         return url;
     }
-    return 0;
 }
 
 int is_empty() {
@@ -569,12 +570,12 @@ void web_crawler(char * url) {
     res = curl_easy_perform(curl_handle);
 
     if( res != CURLE_OK) {
-        fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        // fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
         cleanup(curl_handle, &recv_buf);
         return;
         // exit(1);
     } else {
-        printf("%lu bytes received in memory %p, seq=%d.\n", recv_buf.size, recv_buf.buf, recv_buf.seq);
+        // printf("%lu bytes received in memory %p, seq=%d.\n", recv_buf.size, recv_buf.buf, recv_buf.seq);
     }
 
     /* process the download data */
@@ -590,7 +591,6 @@ int main( int argc, char** argv ) {
     int t = 1;
     int m = 50;
     int v = 0;
-    char *log_file = NULL;
     char *seed_url = NULL;
     char *png_file = "png_urls.txt";
 
@@ -649,81 +649,43 @@ int main( int argc, char** argv ) {
     fclose(fp);
 
     /* create empty log file */
-    if (v) {
-        fp = fopen(log_file, "w+");
-        if (fp == NULL) {
-            perror("fopen");
-            return -2;
-        }
-        fclose(fp);
+    fp = fopen(log_file, "w+");
+    if (fp == NULL) {
+        perror("fopen");
+        return -2;
     }
+    fclose(fp);
 
     /* web crawler logic */
 
     if (t == 1) {
         printf("running single-threaded version\n");
 
-        char *current_url = seed_url;
-        printf("URL is %s\n", current_url);
+        push_to_frontier(seed_url);
 
-        if (hcreate(NUM_URLS) == 0) {
-            printf("Failed to create hash table\n");
-            return 1;
-        }
-
-        web_crawler(current_url);
-        add_to_visited(current_url);
-        printf("first url: %s\n", current_url);
-        printf("empty? %d\n", is_empty());
-
-        ENTRY *ep;
-        ENTRY e;
-        char tmp[256];
-        strcpy(tmp, current_url);
-        e.key = tmp;
-        e.data = 0;
-
-        ep = hsearch(e, FIND);
-        if(ep != NULL) {
-            printf("added\n");
-        }
-
-        while (pngs_found != m && !is_empty()) {
+        while (pngs_found < m && !is_empty()) {
             
-            current_url = pop_from_frontier();
-            printf("current url: %s\n", current_url);
+            char *current_url = pop_from_frontier();
+            // printf("current url: %s\n", current_url);
             
-            /* check if already visited */
-            ENTRY *ep;
-            ENTRY e;
-            char tmp[256];
-            strcpy(tmp, current_url);
-            e.key = tmp;
-            e.data = 0;
-
-            ep = hsearch(e, FIND);
-
-            printf("visited? %p\n", ep);
-
-            if (ep == NULL) {
-                printf("URL is %s\n", current_url);
+            /* check if already visited */  
+            if (!is_visited(current_url)) {
+                // printf("URL is %s\n", current_url);
                 web_crawler(current_url);
                 add_to_visited(current_url);
-                if (v) {
-                    sprintf(current_url, "%s\n", current_url);
-                    write_file(log_file, current_url, strlen(current_url));
-                }
             }
             free(current_url);
         }
 
         /* cleaning up */
         cleanup_list();
-        hdestroy();
     } else {
         printf("running multi-threaded version\n");
     }
 
+    if (!v) {
+        remove(log_file);        
+    }
     return 0;
 }
 
