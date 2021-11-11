@@ -44,15 +44,16 @@ typedef struct recv_buf2 {
                      /* <0 indicates an invalid seq number */
 } RECV_BUF;
 
-typedef struct list {
-    unsigned int head;
-    unsigned int size;
-} LIST;
-
 typedef struct node {
     struct node *next;
     char *url;
 } NODE;
+
+typedef struct list {
+    NODE *head;
+    unsigned int size;
+} LIST;
+
 
 /* global variables */
 LIST *frontier;
