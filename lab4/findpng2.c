@@ -21,6 +21,8 @@
 #include <sys/time.h>
 // #include <sys/ipc.h>
 
+#include "crc.h"
+
 #define SEED_URL "http://ece252-1.uwaterloo.ca/lab4/"
 #define ECE252_HEADER "X-Ece252-Fragment: "
 #define BUF_SIZE 1048576  /* 1024*1024 = 1M */
@@ -391,6 +393,72 @@ CURL *easy_handle_init(RECV_BUF *ptr, const char *url)
     return curl_handle;
 }
 
+int is_png(char* buf) {
+    if (buf[1] != 0x50 || buf[2] != 0x4E || buf[3] != 0x47) {
+        return 0;
+    }
+    return 1;
+}
+
+void copyBytes(char* dest, char* target, int len) {
+    for (int i=0; i<len; i++) {
+        dest[i] = target[i];
+    }
+}
+
+int verifycrc(char* type, char* buf, int ind, int len) {
+
+   // printf("verify\n");
+    unsigned char* data = malloc((len+4)*sizeof(char));
+    copyBytes(data, buf + ind, len);
+    
+    unsigned int crc_val = crc(data, len);
+    int orig_crc_val = (int)((unsigned char)buf[ind+len] << 24) + (int)((unsigned char)buf[ind+len+1] << 16) + (int)((unsigned char)buf[ind+len+2] << 8) + (int)((unsigned char)buf[ind+len+3]);
+
+    if (orig_crc_val != crc_val) {
+        free (data);
+        return 0;
+    }
+    
+    free (data);
+    return 1;
+}
+
+int verify_png(RECV_BUF* recv_buf) {
+
+    if (!is_png(recv_buf->buf)) {
+        return 0;
+    }
+    /* this code might not be necessary for determining pngs, since all fakes have been found by the above check
+    int new_chunk = 1;
+
+    int chunk_len = 0;
+    int nextChunkInd = 0;
+    char* type_code = malloc(4*sizeof(char));
+    int i = 8;
+
+    while (i < recv_buf->size) {
+        if (new_chunk) {
+            chunk_len = (int)((unsigned char)recv_buf->buf[i] << 24) + (int)((unsigned char)recv_buf->buf[i+1] << 16) + (int)((unsigned char)recv_buf->buf[i+2] << 8) + (int)((unsigned char)recv_buf->buf[i+3]);
+            strncpy(type_code, recv_buf->buf + i + 4, 4);
+            new_chunk = 0;
+            i += 8;
+            nextChunkInd = i + chunk_len + 4;
+            if (!verifycrc(type_code, recv_buf->buf, i-4, chunk_len + 4)) {
+                return 0;
+            }
+        } else {
+            i++;
+            if (i == nextChunkInd) {
+                new_chunk = 1;
+            }
+        }
+    }
+    free (type_code);
+    */
+    return 1;
+}
+
 int process_html(CURL *curl_handle, RECV_BUF *p_recv_buf)
 {
     // char fname[256];
@@ -415,6 +483,12 @@ int process_png(CURL *curl_handle, RECV_BUF *p_recv_buf)
     if ( eurl != NULL) {
         // printf("The PNG url is: %s\n", eurl);
     }
+    
+    if (!verify_png(p_recv_buf)) {
+        //printf("not real png\n");
+        return -1;
+    }
+    
 
     char tmp[256];
     sprintf(tmp, "%s\n", eurl);
@@ -621,8 +695,6 @@ void* crawler(void* arg) {
         sem_post(&waiting_counter);
         */
 
-        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
-
         sem_wait(&waiting_counter);
         threads_waiting ++;
         if (threads_waiting == t) {
@@ -634,16 +706,18 @@ void* crawler(void* arg) {
         }
         sem_post(&waiting_counter);
 
+        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
         sem_wait(&needed_attempts);
         
         sem_wait(&full_list);
+
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
 
         sem_wait(&waiting_counter);
         threads_waiting --;
         sem_post(&waiting_counter);
 
         pthread_mutex_lock(&mutex);
-        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
         char *current_url = pop_from_frontier();
         pthread_mutex_unlock(&mutex);
 
