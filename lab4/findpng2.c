@@ -176,7 +176,6 @@ int find_http(char *buf, int size, int follow_relative_links, const char *base_u
         xmlXPathFreeObject (result);
     }
     xmlFreeDoc(doc);
-    xmlCleanupParser();
     return 0;
 }
 /**
@@ -810,6 +809,8 @@ int main( int argc, char** argv ) {
 
     /* web crawler logic */
 
+    xmlInitParser();
+
     if (t == 1) {
         // printf("running single-threaded version\n");
 
@@ -874,6 +875,8 @@ int main( int argc, char** argv ) {
     sem_destroy(&finished);
     sem_destroy(&png_urls);
     sem_destroy(&waiting_counter);
+
+    xmlCleanupParser();
 
     return 0;
 }
