@@ -13,7 +13,8 @@
 // #include <sys/shm.h>
 // #include <sys/stat.h>
 // #include <sys/wait.h>
-// #include <semaphore.h>
+#include <semaphore.h>
+#include <pthread.h>
 // #include <errno.h>
 // #include <arpa/inet.h>
 #include <time.h>
@@ -58,7 +59,18 @@ typedef struct list {
 /* global variables */
 LIST *frontier;
 int pngs_found;
+int threads_waiting;
 char *log_file = "log.txt";
+int t;
+int m;
+
+sem_t full_list;
+sem_t finished;
+sem_t needed_attempts;
+sem_t png_urls;
+sem_t counter;
+sem_t waiting_counter;
+pthread_mutex_t mutex;
 
 htmlDocPtr mem_getdoc(char *buf, int size, const char *url);
 xmlXPathObjectPtr getnodeset (xmlDocPtr doc, xmlChar *xpath);
@@ -152,9 +164,14 @@ int find_http(char *buf, int size, int follow_relative_links, const char *base_u
                 char *url = (char *) href;
                 // printf("url: %s\n", url);
 
+                sem_wait(&png_urls);
                 if (!is_visited(url)) {
+                    pthread_mutex_lock(&mutex);
                     push_to_frontier(url);
+                    sem_post(&full_list);
+                    pthread_mutex_unlock(&mutex);
                 }
+                sem_post(&png_urls);
             }
             xmlFree(href);
         }
@@ -402,9 +419,11 @@ int process_png(CURL *curl_handle, RECV_BUF *p_recv_buf)
     char tmp[256];
     sprintf(tmp, "%s\n", eurl);
     // printf("process png\n");
+    sem_wait(&counter);
     pngs_found++;
-    // printf("\n");
     printf("pngs found: %d\n", pngs_found);
+    sem_post(&counter);
+    // printf("\n");
     // printf("\n");
 
     return write_file(fname, tmp, strlen(tmp));
@@ -418,6 +437,7 @@ int process_png(CURL *curl_handle, RECV_BUF *p_recv_buf)
 
 int process_data(CURL *curl_handle, RECV_BUF *p_recv_buf)
 {
+    //printf("processing data\n");
     CURLcode res;
     // char fname[256];
     // pid_t pid =getpid();
@@ -443,10 +463,12 @@ int process_data(CURL *curl_handle, RECV_BUF *p_recv_buf)
     }
 
     if ( strstr(ct, CT_HTML) ) {
+        sem_post(&needed_attempts);
         return process_html(curl_handle, p_recv_buf);
     } else if ( strstr(ct, CT_PNG) ) {
         return process_png(curl_handle, p_recv_buf);
     } else {
+        sem_post(&needed_attempts);
         // sprintf(fname, "./output_%d", pid);
     }
 
@@ -491,17 +513,16 @@ void init_list() {
 
 int push_to_frontier(const char *url) {
 
-    if (!is_visited(url)) {
-        NODE *tmp = frontier->head;
-        NODE *new_node = (NODE*) malloc(sizeof(NODE));
-        new_node->url = malloc(sizeof(char) * (strlen(url) + 1));
-        strcpy(new_node->url, url);
-        new_node->next = tmp;
-        frontier->head = new_node;
-        frontier->size++;
+    NODE *tmp = frontier->head;
+    NODE *new_node = (NODE*) malloc(sizeof(NODE));
+    new_node->url = malloc(sizeof(char) * (strlen(url) + 1));
+    strcpy(new_node->url, url);
+    new_node->next = tmp;
+    frontier->head = new_node;
+    frontier->size++;
         // printf("pushed to front: %s\n", new_node->url);
         // print_list();
-    }
+    
     // printf("done push\n");
     return 0;
 }
@@ -535,6 +556,7 @@ char * pop_from_frontier() {
         // printf("\n");
         return url;
     }
+    return NULL;
 }
 
 int is_empty() {
@@ -570,6 +592,7 @@ void web_crawler(char * url) {
     if( res != CURLE_OK) {
         // fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
         cleanup(curl_handle, &recv_buf);
+        sem_post(&needed_attempts);
         return;
         // exit(1);
     } else {
@@ -577,17 +600,86 @@ void web_crawler(char * url) {
     }
 
     /* process the download data */
-    process_data(curl_handle, &recv_buf);
+    int pres = process_data(curl_handle, &recv_buf);
+    if (pres != 0) {
+        sem_post(&needed_attempts);
+    }
     cleanup(curl_handle, &recv_buf);
 
+}
+
+void* crawler(void* arg) {
+
+    int oldstate = 0;
+    while (1) {
+        
+        /* testing code
+        int temp = 0;
+        sem_getvalue(&needed_attempts, &temp);
+        sem_wait(&waiting_counter);
+        printf("waiting on attempt, there are %d with %d running\n", temp, threads_waiting);
+        sem_post(&waiting_counter);
+        */
+
+        pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &oldstate);
+
+        sem_wait(&waiting_counter);
+        threads_waiting ++;
+        if (threads_waiting == t) {
+            pthread_mutex_lock(&mutex);
+            if (is_empty()) {
+                sem_post(&finished);
+            }
+            pthread_mutex_unlock(&mutex);
+        }
+        sem_post(&waiting_counter);
+
+        sem_wait(&needed_attempts);
+        
+        sem_wait(&full_list);
+
+        sem_wait(&waiting_counter);
+        threads_waiting --;
+        sem_post(&waiting_counter);
+
+        pthread_mutex_lock(&mutex);
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &oldstate);
+        char *current_url = pop_from_frontier();
+        pthread_mutex_unlock(&mutex);
+
+        int valid = 0;
+
+        sem_wait(&png_urls);
+        if (!is_visited(current_url)) {
+            // printf("URL is %s\n", current_url);
+            add_to_visited(current_url);
+            valid = 1;
+        }
+        sem_post(&png_urls);
+
+        if (valid) {
+            //printf("crawling\n");
+            web_crawler(current_url);
+        } else {
+            sem_post(&needed_attempts);
+        }
+        free(current_url);
+
+        sem_wait(&counter);
+        if (pngs_found == m) {
+            sem_post(&finished);
+        }
+        sem_post(&counter);
+    }
+    return NULL;
 }
 
 int main( int argc, char** argv ) {
 
     /* variables for parameters */
     int c;
-    int t = 1;
-    int m = 50;
+    t = 1;
+    m = 50;
     int v = 0;
     char *seed_url = NULL;
     char *png_file = "png_urls.txt";
@@ -636,6 +728,7 @@ int main( int argc, char** argv ) {
 
     init_list();
     pngs_found = 0;
+    threads_waiting = 0;
 
     /* create empty png_urls file */
     FILE *fp = NULL;
@@ -653,6 +746,15 @@ int main( int argc, char** argv ) {
         return -2;
     }
     fclose(fp);
+
+    /* init sems */
+    pthread_mutex_init(&mutex, NULL);
+    sem_init(&full_list, 0, 1);
+    sem_init(&needed_attempts, 0, 0);
+    sem_init(&counter, 0, 1);
+    sem_init(&finished, 0, 0);
+    sem_init(&png_urls, 0, 1);
+    sem_init(&waiting_counter, 0, 1);
 
     /* timing */
 
@@ -688,6 +790,29 @@ int main( int argc, char** argv ) {
         }
     } else {
         printf("running multi-threaded version\n");
+        push_to_frontier(seed_url);
+        
+        /* initialize variables */
+
+        printf("m: %d\n", m);
+        for (int i=0; i<m; i++) {
+            sem_post(&needed_attempts);
+        }
+
+        pthread_t pid[t];
+        void *vr;
+        for (int i=0; i<t; i++) {
+            pthread_create(&pid[i], NULL, crawler, NULL);
+        }
+        sem_wait(&finished);
+        printf("done crawling, ending threads\n");
+        for (int i=0; i<t; i++) {
+            pthread_cancel(pid[i]);
+        }
+        for (int i=0; i<t; i++) {
+            pthread_join(pid[i], &vr);
+        }
+
     }
 
     /* timing */
@@ -703,6 +828,14 @@ int main( int argc, char** argv ) {
     }
     /* cleaning up */
     cleanup_list();
+
+    pthread_mutex_destroy(&mutex);
+    sem_destroy(&full_list);
+    sem_destroy(&needed_attempts);
+    sem_destroy(&counter);
+    sem_destroy(&finished);
+    sem_destroy(&png_urls);
+    sem_destroy(&waiting_counter);
 
     return 0;
 }
