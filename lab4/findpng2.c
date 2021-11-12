@@ -485,7 +485,7 @@ int process_png(CURL *curl_handle, RECV_BUF *p_recv_buf)
     sprintf(tmp, "%s\n", eurl);
     sem_wait(&counter);
     pngs_found++;
-    printf("pngs found: %d\n", pngs_found);
+    // printf("pngs found: %d\n", pngs_found);
     sem_post(&counter);
 
     return write_file(fname, tmp, strlen(tmp));
