@@ -696,12 +696,13 @@ int main( int argc, char** argv ) {
 
             /* check if already visited */  
             if (!is_visited(current_url)) {
-                urls[connections] = current_url;
+                sprintf(urls[connections], "%s", current_url);
                 init(cm, urls[connections]);
                 connections++;
                 total_connections++;
                 add_to_visited(current_url);
             }
+            free(current_url);
         }
 
         // printf("connections made: %d\n", connections);
@@ -718,17 +719,22 @@ int main( int argc, char** argv ) {
             curl_multi_perform(cm, &still_running);
         } while(still_running);
 
-        while ((msg = curl_multi_info_read(cm, &msgs_left)) && pngs_found < m) {
+        while ((msg = curl_multi_info_read(cm, &msgs_left))) {
             if (msg->msg == CURLMSG_DONE) {
                 eh = msg->easy_handle;
 
                 szUrl = NULL;
                 curl_easy_getinfo(eh, CURLINFO_PRIVATE, &szUrl);
 
-                web_crawler(szUrl);
-                
-                curl_multi_remove_handle(cm, eh);
-                curl_easy_cleanup(eh);
+                if (pngs_found >= m) {
+                    curl_multi_remove_handle(cm, eh);
+                    curl_easy_cleanup(eh);
+                    break;
+                } else {
+                    web_crawler(szUrl);
+                    curl_multi_remove_handle(cm, eh);
+                    curl_easy_cleanup(eh);
+                }
 
             } else {
                 fprintf(stderr, "error: after curl_multi_info_read(), CURLMsg=%d\n", msg->msg);
