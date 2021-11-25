@@ -726,16 +726,11 @@ int main( int argc, char** argv ) {
                 szUrl = NULL;
                 curl_easy_getinfo(eh, CURLINFO_PRIVATE, &szUrl);
 
-                if (pngs_found >= m) {
-                    curl_multi_remove_handle(cm, eh);
-                    curl_easy_cleanup(eh);
-                    break;
-                } else {
+                if (pngs_found < m) {
                     web_crawler(szUrl);
-                    curl_multi_remove_handle(cm, eh);
-                    curl_easy_cleanup(eh);
                 }
-
+                curl_multi_remove_handle(cm, eh);
+                curl_easy_cleanup(eh); 
             } else {
                 fprintf(stderr, "error: after curl_multi_info_read(), CURLMsg=%d\n", msg->msg);
             }
