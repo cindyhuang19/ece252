@@ -739,7 +739,7 @@ int main( int argc, char** argv ) {
     curl_multi_cleanup(cm);
     curl_global_cleanup();
 
-    printf("total connections: %d\n", total_connections);
+    // printf("total connections: %d\n", total_connections);
 
     /* timing */
     if (gettimeofday(&tv, NULL) != 0) {
