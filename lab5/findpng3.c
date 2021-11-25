@@ -628,7 +628,7 @@ int main( int argc, char** argv ) {
     }
 
     /* print options and parameters (remove at end) */
-    printf("t: %d, m: %d, v: %d, log_file: %s\n", t, m, v, log_file);
+    // printf("t: %d, m: %d, v: %d, log_file: %s\n", t, m, v, log_file);
 
     /* variables for web crawler logic */
 
